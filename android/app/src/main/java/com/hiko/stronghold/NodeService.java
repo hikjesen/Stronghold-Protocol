@@ -13,6 +13,7 @@ public final class NodeService extends Service {
     private static final AtomicBoolean STARTING = new AtomicBoolean(false);
     private static volatile boolean running = false;
     private static volatile String lastError = null;
+    private static volatile String status = "正在准备游戏资源…";
 
     public static boolean isRunning() {
         return running;
@@ -20,6 +21,10 @@ public final class NodeService extends Service {
 
     public static String getLastError() {
         return lastError;
+    }
+
+    public static String getStatus() {
+        return status;
     }
 
     @Override
@@ -30,15 +35,22 @@ public final class NodeService extends Service {
 
         new Thread(() -> {
             try {
-                File root = GameInstaller.ensureInstalled(this, text -> Log.i(TAG, text));
+                lastError = null;
+                status = "正在准备游戏资源…";
+
+                File root = GameInstaller.ensureInstalled(this, text -> {
+                    status = text;
+                    Log.i(TAG, text);
+                });
+
                 File cache = getCacheDir();
                 File home = getFilesDir();
                 File entry = new File(root, "server/index.js");
 
                 if (!entry.isFile()) throw new IllegalStateException("server/index.js 不存在");
 
+                status = "正在启动本地游戏服务器…";
                 running = true;
-                lastError = null;
 
                 int code = NativeNode.start(
                         root.getAbsolutePath(),
@@ -49,10 +61,12 @@ public final class NodeService extends Service {
 
                 running = false;
                 lastError = "Node 服务已退出，代码 " + code;
+                status = lastError;
                 Log.e(TAG, lastError);
             } catch (Throwable t) {
                 running = false;
                 lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
+                status = lastError;
                 Log.e(TAG, "Node startup failed", t);
             } finally {
                 STARTING.set(false);

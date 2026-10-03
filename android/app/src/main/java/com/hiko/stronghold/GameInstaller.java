@@ -13,11 +13,18 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class GameInstaller {
-    private static final String VERSION = "stronghold-android-v1";
+    // v2 deliberately invalidates any possibly-corrupted v1 install left by
+    // the first Android build's concurrent extraction race.
+    private static final String VERSION = "stronghold-android-v2";
 
     private GameInstaller() {}
 
-    public static File ensureInstalled(Context context, Progress progress) throws IOException {
+    /**
+     * Installation is process-wide single-flight. MainActivity and NodeService
+     * may be created close together by Android, so never allow two extract/delete
+     * passes to touch the same game directory at once.
+     */
+    public static synchronized File ensureInstalled(Context context, Progress progress) throws IOException {
         File root = new File(context.getFilesDir(), "game");
         File marker = new File(root, ".installed-version");
         if (marker.isFile()) {
@@ -28,12 +35,13 @@ public final class GameInstaller {
             }
         }
 
-        progress.onProgress("正在初始化游戏资源…");
+        progress.onProgress("正在清理旧资源…");
         deleteRecursively(root);
         if (!root.mkdirs() && !root.isDirectory()) {
             throw new IOException("无法创建游戏目录: " + root);
         }
 
+        progress.onProgress("正在初始化游戏资源…");
         try (InputStream raw = context.getAssets().open("game.zip");
              ZipInputStream zip = new ZipInputStream(new BufferedInputStream(raw))) {
             ZipEntry entry;
@@ -65,6 +73,7 @@ public final class GameInstaller {
             }
         }
 
+        // The marker is written last: its presence means the extraction finished.
         try (FileOutputStream out = new FileOutputStream(marker)) {
             out.write(VERSION.getBytes(StandardCharsets.UTF_8));
         }
@@ -90,7 +99,9 @@ public final class GameInstaller {
                 for (File child : children) deleteRecursively(child);
             }
         }
-        if (!file.delete()) throw new IOException("无法删除旧文件: " + file);
+        if (!file.delete() && file.exists()) {
+            throw new IOException("无法删除旧文件: " + file);
+        }
     }
 
     public interface Progress {

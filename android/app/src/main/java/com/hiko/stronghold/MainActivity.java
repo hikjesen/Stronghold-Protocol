@@ -43,11 +43,12 @@ public final class MainActivity extends Activity {
         enterImmersive();
         buildUi();
 
+        // NodeService is the single owner of resource installation and Node startup.
+        // MainActivity only observes status and waits for the health endpoint.
         startService(new Intent(this, NodeService.class));
 
         worker.execute(() -> {
             try {
-                GameInstaller.ensureInstalled(this, this::setStatus);
                 waitForServer();
             } catch (Throwable t) {
                 showFatal("启动失败\n" + t.getClass().getSimpleName() + ": " + t.getMessage());
@@ -86,7 +87,8 @@ public final class MainActivity extends Activity {
     }
 
     private void waitForServer() throws Exception {
-        long deadline = System.currentTimeMillis() + 45_000;
+        // First boot must unpack a few hundred MB, so give slower devices plenty of time.
+        long deadline = System.currentTimeMillis() + 180_000;
         while (!destroyed && System.currentTimeMillis() < deadline) {
             String nodeError = NodeService.getLastError();
             if (nodeError != null) throw new IllegalStateException(nodeError);
@@ -107,10 +109,11 @@ public final class MainActivity extends Activity {
                     }
                 }
             } catch (Exception ignored) {
-                // Node may still be booting.
+                // Node may still be installing or booting.
             }
 
-            setStatus("正在启动本地游戏服务器…");
+            String current = NodeService.getStatus();
+            setStatus(current != null ? current : "正在启动本地游戏服务器…");
             Thread.sleep(350);
         }
         throw new IllegalStateException("本地服务器启动超时");
