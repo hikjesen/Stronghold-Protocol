@@ -1,0 +1,112 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [android-apk]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install game dependencies
+        run: npm ci --omit=dev
+
+      - name: Download game assets
+        run: node tools/setup.mjs --no-local --yes --quiet
+
+      - name: Pack embedded game
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android/app/src/main/assets
+          zip -q -r android/app/src/main/assets/game.zip \
+            server shared public data node_modules package.json LICENSE NOTICE.md
+          ls -lh android/app/src/main/assets/game.zip
+
+      - name: Download Node.js Mobile 24
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/fogtape/nodejs-mobile/releases/download/v24.21.0-0/nodejs-mobile-android-24.21.0-0.zip"
+          mkdir -p /tmp/node-mobile
+          curl -fL --retry 4 --retry-delay 2 "$URL" -o /tmp/node-mobile.zip
+          unzip -q /tmp/node-mobile.zip -d /tmp/node-mobile
+
+          LIBNODE="$(find /tmp/node-mobile -type f -path '*/arm64-v8a/libnode.so' | head -n 1)"
+          NODE_H="$(find /tmp/node-mobile -type f -path '*/include/node/node.h' | head -n 1)"
+
+          test -n "$LIBNODE"
+          test -n "$NODE_H"
+
+          LIBDIR="$(dirname "$LIBNODE")"
+          HEADERDIR="$(dirname "$NODE_H")"
+
+          mkdir -p android/app/libnode/bin/arm64-v8a
+          mkdir -p android/app/libnode/include/node
+
+          cp "$LIBDIR"/*.so android/app/libnode/bin/arm64-v8a/
+          cp -a "$HEADERDIR"/. android/app/libnode/include/node/
+
+          echo "Node runtime:"
+          ls -lh android/app/libnode/bin/arm64-v8a/
+          echo "Node headers:"
+          test -f android/app/libnode/include/node/node.h
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build components
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.22.1"
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Build debug APK
+        run: gradle -p android :app:assembleDebug --stacktrace
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          ls -lh "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | head -n 20
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: stronghold-protocol-android-arm64
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
